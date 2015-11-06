@@ -1,0 +1,299 @@
+---
+title: "03_GWAS_QC_plots"
+author: "Heather Wheeler"
+date: "`r Sys.time()`"
+output: html_document
+---
+###Load packages, functions, paths
+```{r load,message=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(sas7bdat) ##read SAS files
+"%&%" = function(a,b) paste(a,b,sep="")
+my.dir = "/Volumes/dolan-lab/hwheeler/ThePlatinumStudy/GWAS/genotypes/"
+pca.dir = "/Volumes/dolan-lab/hwheeler/ThePlatinumStudy/GWAS/PCA/"
+dem.dir = "/Volumes/dolan-lab/hwheeler/ThePlatinumStudy/Ototoxicity_modeling/from_Alicia_Brocht_20150416/sas-files/"
+```
+
+###Call rate distributions
+```{r callrate,eval=TRUE}
+##look at distribution of SNP F_MISS (proportion of sample missing this SNP)
+lmiss <- read.table(my.dir %&% "N88_Recluster_TOP_20150911_FinalReport.lmiss",header=T)
+hist(lmiss$F_MISS)
+##SNP count at start
+dim(lmiss)[1]
+##SNPs with call rates > 99%
+table(lmiss$F_MISS<0.01)
+##percent SNPs with call rates > 99%
+table(lmiss$F_MISS<0.01)/sum(table(lmiss$F_MISS<0.01))
+
+##after removing SNPs with < 99% call rates, look at sample F_MISS (proportion of missing SNPs)
+imiss <- read.table(my.dir %&% "N88_Recluster_TOP_20150911_FinalReport.geno0.01.imiss",header=T)
+hist(imiss$F_MISS)
+##looks great, all individuals now have >99.2% call rates
+newlmiss <- read.table(my.dir %&% "N88_Recluster_TOP_20150911_FinalReport.geno0.01.lmiss",header=T)
+hist(newlmiss$F_MISS)
+
+##SNP and individual count after rm low-call SNPs
+dim(newlmiss)[1]
+dim(imiss)[1]
+```
+
+###Check IBD
+```{r ibd}
+##PLINK options: --genome --min 0.05 (only output pairs with PI_HAT > 0.05)
+ibd <- read.table(my.dir %&% "N88_Recluster_TOP_20150911_FinalReport.geno0.01.LD0.3.genome",header=T)
+ggplot(data=ibd,aes(x=Z0,y=Z1))+geom_point(alpha=1/4)+theme_bw()
+##pull duplicates
+dups <- data.frame()
+for(i in 1:dim(ibd)[1]){
+  if(as.character(ibd$IID1[i]) == as.character(ibd$IID2[i])){
+    dups <- rbind(dups,ibd[i,])
+  }
+}
+dim(dups)
+##expected 48 dups, see 46
+##missing: 31636 (Plate03_D09 was not in n=1145 genotype set)
+##missing: 31505 (Plate07_E08 matches (pihat=1) 31513 (Plate01_H04), rather than the expected 31505 (Plate07_G05))
+
+##pull hapmap samples
+hapmap <- filter(ibd,grepl('NA',IID1))
+hapmap
+##parent-child relationships are as expected
+
+##pull others (exlude expected dups and hapmap)
+toExclude <- c(as.character(dups$IID1),as.character(hapmap$IID1))
+a <- as.character(ibd$IID1) %in% toExclude
+others <- ibd[a==FALSE,]
+dim(others)
+hist(others$PI_HAT)
+sortOthers<-others[order(others$PI_HAT,decreasing=TRUE),]
+##Unexpected duplicates:
+filter(others,PI_HAT>=0.2)
+write.table(filter(others,PI_HAT>=0.2),my.dir %&% "PtStudy_revealed_duplicates.txt",quote=FALSE,row.names=FALSE)
+## Above are due to likely sample mix-ups, won't know which of pair the DNA belongs to,
+## thus, remove both from analysis (n=16 removed b/c sample mix-up)
+## could be identical twins, but 8 pairs highly unlikely (Monozygotic twins: 3.5 per 1000 births.)
+
+##RERUN --genome without known dups, hapmap, or revealed duplicates
+##make known dups/hapmap list
+hapmaplist1 <- select(hapmap,FID1,IID1)
+hapmaplist2 <- select(hapmap,FID2,IID2)
+colnames(hapmaplist1) <- c("FID","IID")
+colnames(hapmaplist2) <- c("FID","IID")
+hapmaplist <- unique(rbind(hapmaplist1,hapmaplist2))
+dupslist <- select(dups,FID1,IID1) #only choose one in set of known duplicates
+colnames(dupslist) <- c("FID","IID")
+mixup <-filter(others,PI_HAT>=0.9)
+mixup1 <- select(mixup,FID1,IID1)
+mixup2 <- select(mixup,FID2,IID2)
+colnames(mixup1) <- c("FID","IID")
+colnames(mixup2) <- c("FID","IID")
+mixuplist <- unique(rbind(mixup1,mixup2))
+hapdup <- unique(rbind(hapmaplist,dupslist,mixuplist))
+dim(mixuplist)
+write.table(hapdup,file=my.dir %&% "hapmapDuplicateList.txt",row.names=FALSE,quote=FALSE)
+
+## number left after rm hapmap & known duplicates
+dim(imiss)[1]-dim(hapdup)[1]+dim(mixuplist)[1]
+## number left after rm mixup duplicates
+dim(imiss)[1]-dim(hapdup)[1]
+
+##input new genome file 
+##PLINK options: --genome --min 0.05 (only output pairs with PI_HAT > 0.05)
+ibd2 <- read.table(my.dir %&% "N88_Recluster_TOP_20150911_FinalReport.geno0.01.LD0.3.rmKnownDupsHapmap.genome",header=TRUE)
+ggplot(data=ibd2,aes(x=Z0,y=Z1))+geom_point(alpha=1/4)+theme_bw()+coord_cartesian(xlim=c(-0.05,1.05),ylim=c(-0.05,1.05))
+hist(ibd2$PI_HAT)
+
+##make list of samples with audiometry
+audiofile <- "/Users/heather/GitHub/ThePlatinumStudy/Ototoxicity_modeling/Datasets_from_Ryan_Cook_20150928/audiometry.sas7bdat"
+audio <- read.sas7bdat(audiofile) %>% mutate(PATNO=as.character(patno))
+airl<-filter(audio,C_AUDTEST==1,C_EARLR==1)
+audiopatno <- airl$patno
+write.table(audiopatno,file=my.dir %&% "patientsWithAudiometry.txt",quote=FALSE,row.names=FALSE,col.names=FALSE)
+
+##of pairs with pi_hat > 0.05, keep the one with audiometry, if possible.
+excludemat <- matrix(0,ncol=2,nrow=dim(ibd2)[1])
+for(i in 1:dim(ibd2)[1]){
+  pat1 <- as.character(ibd2[i,2])
+  pat2 <- as.character(ibd2[i,4])
+  if(pat1 %in% audiopatno){
+    excludemat[i,] <- c(as.character(ibd2[i,3]),pat2)
+  }else{
+    excludemat[i,] <- c(as.character(ibd2[i,1]),pat1)
+  }
+}
+excludemat=unique(excludemat)
+colnames(excludemat)=c("FID","IID")
+write.table(excludemat,file=my.dir %&% "pihat0.05_exclusion_list.txt",quote=FALSE,row.names=FALSE)
+dim(excludemat)
+
+allexclude <- rbind(hapdup,excludemat)
+write.table(allexclude,file=my.dir %&% "hapmapDuplicate_pihat0.05_exclusion_list.txt",quote=FALSE,row.names=FALSE)
+##number left after rm pi_hat>0.05
+dim(imiss)[1]-dim(hapdup)[1]-dim(excludemat)[1]
+
+##PLINK options: --genome (output all pairs, after rm PI_HAT>0.05)
+ibd3 <- read.table(my.dir %&% "N88_Recluster_TOP_20150911_FinalReport.geno0.01.LD0.3.rmKnownDupsHapmap.rmPIHAT0.05.genome",header=TRUE)
+ggplot(data=ibd3,aes(x=Z0,y=Z1))+geom_point(alpha=1/4)+theme_bw()+coord_cartesian(xlim=c(-0.05,1.05),ylim=c(-0.05,1.05))
+hist(ibd3$PI_HAT)
+table(ibd3$PI_HAT>0.05)/sum(table(ibd3$PI_HAT>0.05))
+```
+
+###Calculate HWE statistics
+```{r hwe}
+hwe <- read.table(my.dir %&% "N88_Recluster_TOP_20150911_FinalReport.geno0.01.hwe",header=T)
+summary(hwe$P)
+hist(hwe$P)
+##SNPs with HWE P < 1e-6
+table(hwe$P<1e-06)
+##percent SNPs with HWE P < 1e-6
+table(hwe$P<1e-06)/sum(table(hwe$P<1e-06))
+```
+
+###Check heterozygosity, flag any outliers for removal
+```{r het,eval=TRUE}
+hetfile <- "N88_Recluster_TOP_20150911_FinalReport.geno0.01.LD0.3.rmKnownDupsHapmap.rmPIHAT0.05.het"
+HET <- read.table(my.dir %&% hetfile,header=T,as.is=T)
+H = (HET$N.NM.-HET$O.HOM.)/HET$N.NM.
+oldpar=par(mfrow=c(1,2))
+hist(H,50)
+hist(HET$F,50)
+summary(HET$F)
+par(oldpar)
+
+sortHET<-HET[order(HET$F),]
+#sortHET[1:20,]
+#sortHET[(dim(sortHET)[1]-20):dim(sortHET)[1],]
+
+outliers<-data.frame()
+
+for(i in 1:length(sortHET$F)){
+	if(sortHET[i,6] > (mean(sortHET$F)+3*sd(sortHET$F))){
+		outliers <- rbind(outliers,sortHET[i,])
+	}
+	if(sortHET[i,6] < (mean(sortHET$F)-3*sd(sortHET$F))){
+		outliers <- rbind(outliers,sortHET[i,])
+	}
+}
+hetoutliers <- select(outliers,FID,IID)
+dim(hetoutliers)
+allexclude2 <- rbind(allexclude,hetoutliers)
+write.table(allexclude2,file=my.dir %&% "hapmapDuplicate_pihat0.05_hetOutlier_exclusion_list.txt",quote=F,col.names=F,row.names=F)
+
+##number left after rm heterozygosity outliers
+dim(imiss)[1]-dim(hapdup)[1]-dim(excludemat)[1]-dim(hetoutliers)[1]
+```
+
+###PCA Plots with HapMap3 unrelateds
+```{r pca}
+hapmappopinfo <- read.table(pca.dir %&% "pop_HM3_hg19_forPCA.fam") %>% select(V1,V3)
+colnames(hapmappopinfo) <- c("pop","IID")
+fam <- read.table(my.dir %&% 'N88_HM3_LDpruned.fam') %>% select(V1,V2)
+colnames(fam) <- c("FID","IID")
+popinfo <- left_join(fam,hapmappopinfo,by="IID")
+popinfo <- mutate(popinfo, pop=ifelse(grepl('T',IID),'Norway',as.character(pop))) %>% mutate(pop=ifelse(is.na(pop),'PtStudy',as.character(pop)))
+table(popinfo$pop)
+
+#pcs <- read.table(my.dir %&% "N88_HM3_LDpruned.evec",skip=1)
+pcs <- read.table(my.dir %&% "N88_HM3_geno0.01_maf0.05_LDpruned.evec",skip=1)
+pcdf <- data.frame(popinfo,pcs[,2:11]) %>% rename(PC1=V2,PC2=V3,PC3=V4,PC4=V5,PC5=V6,PC6=V7,PC7=V8,PC8=V9,PC9=V10,PC10=V11)
+
+gwas <- filter(pcdf,pop=='PtStudy' | pop=='Norway') %>% mutate(PATNO=IID)
+##add self-identified Hispanic info
+subjqst <- read.sas7bdat(dem.dir %&% "subjqst.sas7bdat") %>% select(PATNO,C_RAASIAN,C_RAWHITE,C_HISPLAT,C_RAINDALS,C_RABLACK,C_RAHAWOPI)
+gwas <- left_join(gwas,subjqst,by="PATNO") 
+summary(gwas[,15:20])
+hm3 <- filter(pcdf,grepl('NA',IID))
+table(gwas$pop)
+table(hm3$pop)
+
+##calc proportion variance explained by each PC
+#eval <- scan(my.dir %&% 'N88_HM3_LDpruned.eval')[1:10]
+eval <- scan(my.dir %&% 'N88_HM3_geno0.01_maf0.05_LDpruned.eval')[1:10]
+round(eval/sum(eval),3)
+#pdf(file=my.dir %&% "PtStudy_PCA.pdf")
+ggplot() + geom_point(data=gwas,aes(x=PC1,y=PC2,col=pop,shape=pop))+geom_point(data=hm3,aes(x=PC1,y=PC2,col=pop,shape=pop))+ theme_bw() + scale_colour_brewer(palette="Set1")
+
+ggplot() + geom_point(data=gwas,aes(x=PC1,y=PC3,col=pop,shape=pop))+geom_point(data=hm3,aes(x=PC1,y=PC3,col=pop,shape=pop))+ theme_bw() + scale_colour_brewer(palette="Set1")
+
+ggplot() + geom_point(data=gwas,aes(x=PC2,y=PC3,col=pop,shape=pop))+geom_point(data=hm3,aes(x=PC2,y=PC3,col=pop,shape=pop))+ theme_bw() + scale_colour_brewer(palette="Set1")
+#dev.off()
+
+##Norwegians outside of main Norway cluster
+norOut<-filter(gwas,pop=="Norway",PC1<=0.013) %>% select(FID,IID,pop,PC1,PC2,PC3) %>% arrange(PC1)
+write.table(norOut,pca.dir %&% "GWAS_QC_Norwegian_outliers.txt",quote=FALSE,row.names=FALSE,sep="\t")
+norOut
+
+#pdf(file=my.dir %&% "PtStudy_PCA_Self-Report.pdf")
+##color by C_HISPLAT (self-report Hispanic/Latino)
+g<-mutate(gwas,Hispanic=ifelse(is.na(C_HISPLAT)|as.character(C_HISPLAT)=="2"|as.character(C_HISPLAT)=="","NA",as.character(C_HISPLAT))) %>% mutate(Hispanic=ifelse(Hispanic=="0","No",Hispanic)) %>% mutate(Hispanic=ifelse(Hispanic=="1","Yes",Hispanic)) %>% mutate(Hispanic=ifelse(pop=="Norway","Norway",Hispanic))
+ggplot() + geom_point(data=g,aes(x=PC1,y=PC2,col=Hispanic,shape=Hispanic))+ theme_bw() 
+ggplot() + geom_point(data=g,aes(x=PC1,y=PC2,col=Hispanic,shape=Hispanic))+ theme_bw() + coord_cartesian(xlim=c(0.005,0.0175),ylim=c(0,0.008)) +ggtitle("ZOOM")
+
+##color by C_RAWHITE (self-report White)
+g<-mutate(g,White=ifelse(is.na(C_RAWHITE)|as.character(C_RAWHITE)=="2"|as.character(C_RAWHITE)=="","NA",as.character(C_RAWHITE))) %>% mutate(White=ifelse(White=="0","No",White)) %>% mutate(White=ifelse(White=="1","Yes",White)) %>% mutate(White=ifelse(pop=="Norway","Norway",White))
+ggplot() + geom_point(data=g,aes(x=PC1,y=PC2,col=White,shape=White))+ theme_bw() 
+ggplot() + geom_point(data=g,aes(x=PC1,y=PC2,col=White,shape=White))+ theme_bw() + coord_cartesian(xlim=c(0.005,0.0175),ylim=c(0,0.008))+ggtitle("ZOOM")
+
+##color by C_RAASIAN (self-report Asian)
+g<-mutate(g,Asian=ifelse(is.na(C_RAASIAN)|as.character(C_RAASIAN)=="2"|as.character(C_RAASIAN)=="","NA",as.character(C_RAASIAN))) %>% mutate(Asian=ifelse(Asian=="0","No",Asian)) %>% mutate(Asian=ifelse(Asian=="1","Yes",Asian))%>% mutate(Asian=ifelse(pop=="Norway","Norway",Asian))
+ggplot() + geom_point(data=g,aes(x=PC1,y=PC2,col=Asian,shape=Asian))+ theme_bw() 
+ggplot() + geom_point(data=g,aes(x=PC1,y=PC2,col=Asian,shape=Asian))+ theme_bw() + coord_cartesian(xlim=c(0.005,0.0175),ylim=c(0,0.008))+ggtitle("ZOOM")
+
+##color by C_HISPLAT or C_RAASIAN (Hispanic or Asian)
+g<-mutate(g,Hisp_or_Asian=ifelse(Asian=="Yes"|Hispanic=="Yes","Yes",Hispanic))
+ggplot() + geom_point(data=g,aes(x=PC1,y=PC2,col=Hisp_or_Asian,shape=Hisp_or_Asian))+ theme_bw() 
+ggplot() + geom_point(data=g,aes(x=PC1,y=PC2,col=Hisp_or_Asian,shape=Hisp_or_Asian))+ theme_bw() + coord_cartesian(xlim=c(0.005,0.0175),ylim=c(0,0.008))+ggtitle("ZOOM")
+
+##color by C_RAINDALS (self-report American Indian or Alaska Native)
+g<-mutate(g,AmInd=ifelse(is.na(C_RAINDALS)|as.character(C_RAINDALS)=="2"|as.character(C_RAINDALS)=="","NA",as.character(C_RAINDALS))) %>% mutate(AmInd=ifelse(AmInd=="0","No",AmInd)) %>% mutate(AmInd=ifelse(AmInd=="1","Yes",AmInd))%>% mutate(AmInd=ifelse(pop=="Norway","Norway",AmInd))
+ggplot() + geom_point(data=g,aes(x=PC1,y=PC2,col=AmInd,shape=AmInd))+ theme_bw() 
+ggplot() + geom_point(data=g,aes(x=PC1,y=PC2,col=AmInd,shape=AmInd))+ theme_bw() + coord_cartesian(xlim=c(0.005,0.0175),ylim=c(0,0.008))+ggtitle("ZOOM")
+
+##color by C_RABLACK (self-report Black or African American)
+g<-mutate(g,Black=ifelse(is.na(C_RABLACK)|as.character(C_RABLACK)=="2"|as.character(C_RABLACK)=="","NA",as.character(C_RABLACK))) %>% mutate(Black=ifelse(Black=="0","No",Black)) %>% mutate(Black=ifelse(Black=="1","Yes",Black))%>% mutate(Black=ifelse(pop=="Norway","Norway",Black))
+ggplot() + geom_point(data=g,aes(x=PC1,y=PC2,col=Black,shape=Black))+ theme_bw() 
+
+#dev.off()
+```
+
+```{r chooseEuro, eval=TRUE, echo=TRUE} 
+###choose individuals from PtStudy & Norway for homogeneous GWAS###
+
+ceu <- filter(pcdf,pop=='CEU')
+
+uPC1 <- mean(ceu$PC1) + 10*sd(ceu$PC1)
+lPC1 <- mean(ceu$PC1) - 10*sd(ceu$PC1)
+
+uPC2 <- mean(ceu$PC2) + 10*sd(ceu$PC2)
+lPC2 <- mean(ceu$PC2) - 10*sd(ceu$PC2)
+
+ggplot() + geom_point(data=gwas,aes(x=PC1,y=PC2,col=pop,shape=pop))+geom_point(data=hm3,aes(x=PC1,y=PC2,col=pop,shape=pop))+ theme_bw() +geom_vline(xintercept=c(uPC1,lPC1)) +geom_hline(yintercept=c(uPC2,lPC2))
+
+inclusion <- gwas[gwas$PC1 >= lPC1,]
+inclusion <- inclusion[inclusion$PC1 <= uPC1,]
+inclusion <- inclusion[inclusion$PC2 >= lPC2,]
+inclusion <- inclusion[inclusion$PC2 <= uPC2,]
+samples <- inclusion[,1:2]
+table(inclusion$pop)
+##number left after rm non-euro (CEU) clustering individuals
+dim(samples)[1]
+##number removed in PCA analysis
+dim(gwas)[1]-dim(samples)[1]
+
+ggplot() + geom_point(data=gwas,aes(x=PC1,y=PC2,col=gwas$IID %in% samples$IID,shape=gwas$IID %in% samples$IID))+geom_point(data=hm3,aes(x=PC1,y=PC2,col=pop,shape=pop))+ theme_bw()
+
+write.table(samples,file=my.dir %&% "N88.euro.GWAS.PCAs",quote=F,row.names=F,col.names=F)
+
+europcs <- read.table(my.dir %&% "N88_euro_LDpruned.evec",skip=1)
+eupcdf <- europcs %>% rename(PC1=V2,PC2=V3,PC3=V4,PC4=V5,PC5=V6,PC6=V7,PC7=V8,PC8=V9,PC9=V10,PC10=V11) %>% mutate(pop=ifelse(grepl("TC",V1),"Norway","PtStudy"))
+##calc proportion variance explained by each PC
+eval <- scan(my.dir %&% 'N88_euro_LDpruned.eval')[1:10]
+round(eval/sum(eval),3)
+ggplot() + geom_point(data=eupcdf,aes(x=PC1,y=PC2,col=pop,shape=pop)) + theme_bw()
+ggplot() + geom_point(data=eupcdf,aes(x=PC1,y=PC3,col=pop,shape=pop)) + theme_bw()
+ggplot() + geom_point(data=eupcdf,aes(x=PC2,y=PC3,col=pop,shape=pop)) + theme_bw()
+
+```
