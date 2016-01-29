@@ -5,4 +5,3 @@ Start with the papers in `review_articles` to understand the whys of GWAS and GW
 
 Then check out `example_pipelines` to understand the hows of GWAS QC.
 
-test
