@@ -1,0 +1,82 @@
+---
+title: "IBD_analysis"
+author: "Danny Baghdan"
+date: "February 25, 2016"
+output: html_document
+---
+
+plot pi-hat from plink `--genome` call
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(sas7bdat)
+genome=read.table("~/Desktop/LungCancer.geno1.LD0.3.rmPIHAT0.05.genome",header=T)
+hist(genome$PI_HAT)
+plot(genome$Z0,genome$Z1,xlim=c(0,1),ylim=c(0,1))
+cat("Heterozygosity Test")
+
+hetfile=('~/danny/LungCancer.geno1.HupHup.het')
+HET=read.table(hetfile,header=T,as.is=T)
+H=(HET$N.NM.-HET$O.HOM.)/HET$N.NM.
+oldpar=par(mfrow=c(1,2))
+hist(H,50)
+hist(HET$F,50)
+summary(HET$F)
+par(oldpar)
+sortHET=HET[order(HET$F),]
+#sortHET[1:20,]
+#sortHET[(dim(sortHET)[1]-20):dim(sortHET)[1],]
+outliers=data.frame()
+for(i in 1:length(sortHET$F)){
+if(sortHET[i,6]>(mean(sortHET$F)+3*sd(sortHET$F))){
+outliers=rbind(outliers,sortHET[i,])
+}
+if(sortHET[i,6]<(mean(sortHET$F)-3*sd(sortHET$F))){
+outliers=rbind(outliers,sortHET[i,])
+}
+}
+hetoutliers=select(outliers,FID,IID)
+dim(hetoutliers)
+
+cat("PCA")
+
+a=read.table("~/Desktop/LGnew.evec")
+b=read.table("~/Desktop/LPCApruned.fam")
+d=read.table("~/Desktop/pop_HM3_hg18_forPCA.txt")
+c=cbind(a,b)
+colnames(c)<-c("ID's","PC1","PC2","PC3","PC4","PC5","PC6","PC7","PC8","PC9","PC10","Population", "X", "SampleID","A","B","C","D")
+colnames(d)<-c("POP","ID","SampleID","E","F","G","I")
+e<-left_join(c,d)
+f<-e %>% mutate(POP2=ifelse(is.na(POP),"GWAS",as.character(POP)))
+plot(f$PC1,f$PC2,col=as.factor(f$POP2),pch=19,main="PCA")
+legend("left",pch=19,col=c("green","red","black","blue"),legend=c("GWAS","CEU","ASN","YRI"))
+ceu<-filter(f,f$POP2=='CEU')
+uPC1<-mean(ceu$PC1)+13*sd(ceu$PC1)
+lPC1<-mean(ceu$PC1)-13*sd(ceu$PC1)
+uPC2<-mean(ceu$PC2)+13*sd(ceu$PC2)
+lPC2<-mean(ceu$PC2)-13*sd(ceu$PC2)
+
+abline(v=uPC1,col="black")
+abline(v=lPC1,col="black")
+abline(h=lPC2,col="black")
+abline(h=uPC2,col="black")
+
+gwas<-filter(f,f$POP2=='GWAS')
+inclusion<-gwas[gwas$PC1>=lPC1,]
+inclusion<-inclusion[inclusion$PC1<=uPC1,]
+inclusion<-inclusion[inclusion$PC2>=lPC2,]
+inclusion<-inclusion[inclusion$PC2<=uPC2,]
+samples<-inclusion[,13:14]
+dim(samples)[1]
+dim(gwas)[1]-dim(samples)[1]
+
+phenotype=read.csv("~/Desktop/GENEVA_LungCancer_Sample_annotation.CODAO.v2.csv",header=T)
+pt=select(phenotype,sample.num,case.status)
+fam=read.table("~/Desktop/LungCancerQCcomplete.fam",header=F)
+colnames(fam)<-c("FID","sample.num","Dad","Mom","Gender","Phenotype")
+newfam=left_join(fam,pt,by="sample.num")
+newfam=select(newfam,FID,sample.num,Dad,Mom,Gender,case.status)
+```
+
