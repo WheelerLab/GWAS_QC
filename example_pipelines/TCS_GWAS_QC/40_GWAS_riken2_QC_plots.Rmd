@@ -1,0 +1,245 @@
+---
+title: "40_GWAS_riken2_QC_plots"
+author: "Heather Wheeler"
+date: "`r Sys.time()`"
+output: html_document
+---
+###Load packages, functions, paths
+```{r load,message=FALSE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(data.table)
+library(sas7bdat) ##read SAS files
+"%&%" = function(a,b) paste(a,b,sep="")
+my.dir = "/Volumes/dolan-lab/hwheeler/ThePlatinumStudy/GWAS/genotypes/"
+pca.dir = "/Volumes/dolan-lab/hwheeler/ThePlatinumStudy/GWAS/PCA/"
+dem.dir = "/Volumes/dolan-lab/hwheeler/ThePlatinumStudy/GWAS/Datasets_from_Ryan_Cook_20170127/RikenDatasets/Datasets/"
+```
+
+###Call rate distributions
+```{r callrate,eval=TRUE}
+##look at distribution of SNP F_MISS (proportion of sample missing this SNP)
+lmiss <- fread(my.dir %&% "F13_Recluster_TOP_20161226_FinalReport.lmiss")
+hist(lmiss$F_MISS)
+##SNP count at start
+dim(lmiss)[1]
+##SNPs with call rates > 99%
+table(lmiss$F_MISS<0.01)
+
+##after removing SNPs with < 99% call rates, look at sample F_MISS (proportion of missing SNPs)
+imiss <- fread(my.dir %&% "F13_Recluster_TOP_20161226_FinalReport.geno0.01.imiss")
+hist(imiss$F_MISS)
+##looks great, all individuals now have >99.4% call rates
+newlmiss <- fread(my.dir %&% "F13_Recluster_TOP_20161226_FinalReport.geno0.01.lmiss")
+hist(newlmiss$F_MISS)
+##SNP and individual count after rm low-call SNPs
+dim(newlmiss)[1]
+dim(imiss)[1]
+
+##SNP count after rm 566 SNPs with Hardy-Weinberg exact test P < 1e-06
+hwe <- fread(my.dir %&% "F13_Recluster_TOP_20161226_FinalReport.geno0.01.hwe1e-06.bim")
+dim(hwe)
+```
+
+###Check IBD
+```{r ibd, eval = TRUE}
+##PLINK options: --genome --min 0.05 (only output pairs with PI_HAT > 0.05)
+ibd <- read.table(my.dir %&% "F13_Recluster_TOP_20161226_FinalReport.geno0.01.hwe1e-06.LD0.3.genome",header=T)
+ggplot(data=ibd,aes(x=Z0,y=Z1))+geom_point(alpha=1/4)+theme_bw()
+
+##pull duplicates
+dups <- dplyr::filter(ibd,PI_HAT==1)
+dim(dups)
+##expected 17 dups, see 22
+##verify dups with matching IIDs are expected dups by checking plate layout file:
+## grep dup /group/dolan-lab/hwheeler/ThePlatinumStudy/RIKEN_genotyping/RIKEN_2016-10/RIKEN2_layout_FINAL.txt |sort -k7
+expdups <- dplyr::filter(dups,as.character(IID1) == as.character(IID2))
+dim(expdups)
+## manually verified these 17 dups are as expected
+
+##pull unexpected duplicates, IIDs (PATNOs) don't match
+unexp <- dplyr::filter(dups,as.character(IID1) != as.character(IID2))
+print(unexp)
+##forward list to Pt Study for checking
+write.table(unexp, my.dir %&% "RIKEN2_unexpected_duplicates.txt", quote=F,row.names=F)
+## unexp are due to likely sample mix-ups, won't know which of pair the DNA belongs to,
+## thus, remove both from analysis (n=10 removed b/c sample mix-up)
+## could be identical twins, but 5 pairs highly unlikely (Monozygotic twins: 3.5 per 1000 births.)
+
+##pull hapmap samples
+hapmap <- dplyr::filter(ibd,grepl('NA',IID1))
+hapmap
+##parent-child relationships are as expected
+
+##pull others (exlude expected dups and hapmap)
+toExclude <- c(as.character(expdups$IID1),as.character(hapmap$IID1))
+a <- as.character(ibd$IID1) %in% toExclude
+others <- ibd[a==FALSE,]
+dim(others)
+hist(others$PI_HAT)
+
+##RERUN --genome without known dups, hapmap, or revealed duplicates
+##make known dups/hapmap list
+hapmaplist1 <- select(hapmap,FID1,IID1)
+hapmaplist2 <- select(hapmap,FID2,IID2)
+colnames(hapmaplist1) <- c("FID","IID")
+colnames(hapmaplist2) <- c("FID","IID")
+hapmaplist <- unique(rbind(hapmaplist1,hapmaplist2))
+dupslist <- select(expdups,FID1,IID1) #only choose one in set of known duplicates
+colnames(dupslist) <- c("FID","IID")
+mixup <-filter(others,PI_HAT>=0.9) #make list of all revealed duplicates
+mixup1 <- select(mixup,FID1,IID1)
+mixup2 <- select(mixup,FID2,IID2)
+colnames(mixup1) <- c("FID","IID")
+colnames(mixup2) <- c("FID","IID")
+mixuplist <- unique(rbind(mixup1,mixup2)) #old code ends here
+dim(mixuplist)
+##rm one of pair with PI_HAT>0.125
+pithresh <- dplyr::filter(others,PI_HAT>0.125 & PI_HAT<0.9)
+pilist <- select(pithresh,FID1,IID1) #only choose one
+colnames(pilist) <- c("FID","IID")
+dim(pilist)
+hapdup <- unique(rbind(hapmaplist,dupslist,mixuplist,pilist))
+dim(hapdup)
+write.table(hapdup,file=my.dir %&% "RIKEN2_hapmapDuplicateRelated0.125_List.txt",row.names=FALSE,quote=FALSE)
+
+##PLINK options: --genome (output all pairs, after rm PI_HAT>0.125)
+ibd2 <- fread(my.dir %&% "F13_Recluster_TOP_20161226_FinalReport.geno0.01.hwe1e-06.LD0.3.rmDupsHapmap.rmPIHAT0.125.genome")
+ggplot(data=ibd2,aes(x=Z0,y=Z1))+geom_point(alpha=1/4)+theme_bw()+coord_cartesian(xlim=c(-0.05,1.05),ylim=c(-0.05,1.05))
+hist(ibd2$PI_HAT)
+table(ibd2$PI_HAT>0.05)/sum(table(ibd2$PI_HAT>0.05))
+```
+
+###Check heterozygosity, flag any outliers for removal
+```{r het,eval=TRUE}
+hetfile <- "F13_Recluster_TOP_20161226_FinalReport.geno0.01.hwe1e-06.LD0.3.rmDupsHapmap.rmPIHAT0.125.het"
+HET <- read.table(my.dir %&% hetfile,header=T,as.is=T)
+H = (HET$N.NM.-HET$O.HOM.)/HET$N.NM.
+oldpar=par(mfrow=c(1,2))
+hist(H,50)
+hist(HET$F,50)
+abline(v=mean(HET$F)+6*sd(HET$F),col="red")
+abline(v=mean(HET$F)-6*sd(HET$F),col="red")
+summary(HET$F)
+par(oldpar)
+
+sortHET<-HET[order(HET$F),]
+
+outliers<-data.frame()
+
+for(i in 1:length(sortHET$F)){
+	if(sortHET[i,6] > (mean(sortHET$F)+6*sd(sortHET$F))){
+		outliers <- rbind(outliers,sortHET[i,])
+	}
+	if(sortHET[i,6] < (mean(sortHET$F)-6*sd(sortHET$F))){
+		outliers <- rbind(outliers,sortHET[i,])
+	}
+}
+hetoutliers <- select(outliers,FID,IID)
+dim(hetoutliers)
+allexclude <- rbind(hapdup,hetoutliers)
+dim(allexclude)
+write.table(allexclude,file=my.dir %&% "RIKEN2_hapmapDuplicate_pihat0.125_hetOutlier_exclusion_list.txt",quote=F,col.names=F,row.names=F)
+```
+
+###PCA Plots with HapMap3 unrelateds
+```{r pca, eval = TRUE}
+hapmappopinfo <- read.table(pca.dir %&% "pop_HM3_hg19_forPCA.fam") %>% select(V1,V3)
+colnames(hapmappopinfo) <- c("pop","IID")
+fam <- read.table(my.dir %&% 'F13_HM3_LDpruned.fam') %>% select(V1,V2)
+colnames(fam) <- c("FID","IID")
+popinfo <- left_join(fam,hapmappopinfo,by="IID")
+popinfo <- mutate(popinfo,pop=ifelse(is.na(pop),'PtStudy',as.character(pop)))
+table(popinfo$pop)
+
+pcs <- read.table(my.dir %&% "F13_HM3_LDpruned.evec",skip=1)
+pcdf <- data.frame(popinfo,pcs[,2:11]) %>% rename(PC1=V2,PC2=V3,PC3=V4,PC4=V5,PC5=V6,PC6=V7,PC7=V8,PC8=V9,PC9=V10,PC10=V11)
+
+gwas <- dplyr::filter(pcdf,pop=='PtStudy') %>% mutate(Patno=as.character(IID))
+subjqst <- read.csv(dem.dir %&% "DEMOGRAPHICS.csv") %>% dplyr::select(Patno,Race,C_RAASIAN,C_RAWHITE,C_HISPLAT,C_RAINDALS,C_RABLACK,C_RAHAWOPI) %>% mutate(Patno=as.character(Patno))
+gwas <- left_join(gwas,subjqst,by="Patno") 
+hm3 <- filter(pcdf,grepl('NA',IID))
+table(gwas$pop)
+table(hm3$pop)
+
+##calc proportion variance explained by each PC
+eval <- scan(my.dir %&% 'F13_HM3_LDpruned.eval')[1:10]
+round(eval/sum(eval),3)
+ggplot() + geom_point(data=gwas,aes(x=PC1,y=PC2,col=pop,shape=pop))+geom_point(data=hm3,aes(x=PC1,y=PC2,col=pop,shape=pop))+ theme_bw() + scale_colour_brewer(type="qual",palette="Dark2")
+
+##color by self-reported race
+summary(gwas$Race)
+##pull largest categories for plotting
+newgwas <- dplyr::filter(gwas,Race == "White" | Race == "Asian" | Race == "Black/African American" | Race == "More than one Race" | Race == "Other")
+ggplot() + geom_point(data=newgwas,aes(x=PC1,y=PC2,col=Race,shape=Race))+ theme_bw() + scale_colour_brewer(type="qual",palette="Set1")
+
+##color by C_HISPLAT (self-report Hispanic/Latino)
+g<-mutate(gwas,Hispanic=ifelse(is.na(C_HISPLAT)|as.character(C_HISPLAT)=="2"|as.character(C_HISPLAT)=="","NA",as.character(C_HISPLAT))) %>% mutate(Hispanic=ifelse(Hispanic=="0","No",Hispanic)) %>% mutate(Hispanic=ifelse(Hispanic=="1","Yes",Hispanic))
+ggplot() + geom_point(data=g,aes(x=PC1,y=PC2,col=Hispanic,shape=Hispanic))+ theme_bw() + scale_colour_brewer(type="qual",palette="Dark2")
+
+##color by C_RAWHITE (self-report White)
+g<-mutate(g,White=ifelse(is.na(C_RAWHITE)|as.character(C_RAWHITE)=="2"|as.character(C_RAWHITE)=="","NA",as.character(C_RAWHITE))) %>% mutate(White=ifelse(White=="0","No",White)) %>% mutate(White=ifelse(White=="1","Yes",White)) 
+ggplot() + geom_point(data=g,aes(x=PC1,y=PC2,col=White,shape=White))+ theme_bw() + scale_colour_brewer(type="qual",palette="Dark2")
+
+##color by C_RAASIAN (self-report Asian)
+g<-mutate(g,Asian=ifelse(is.na(C_RAASIAN)|as.character(C_RAASIAN)=="2"|as.character(C_RAASIAN)=="","NA",as.character(C_RAASIAN))) %>% mutate(Asian=ifelse(Asian=="0","No",Asian)) %>% mutate(Asian=ifelse(Asian=="1","Yes",Asian))
+ggplot() + geom_point(data=g,aes(x=PC1,y=PC2,col=Asian,shape=Asian))+ theme_bw() + scale_colour_brewer(type="qual",palette="Dark2")
+
+##color by C_HISPLAT or C_RAASIAN (Hispanic or Asian)
+g<-mutate(g,Hisp_or_Asian=ifelse(Asian=="Yes"|Hispanic=="Yes","Yes",Hispanic))
+ggplot() + geom_point(data=g,aes(x=PC1,y=PC2,col=Hisp_or_Asian,shape=Hisp_or_Asian))+ theme_bw()+ scale_colour_brewer(type="qual",palette="Dark2")
+
+##color by C_RAINDALS (self-report American Indian or Alaska Native)
+g<-mutate(g,AmInd=ifelse(is.na(C_RAINDALS)|as.character(C_RAINDALS)=="2"|as.character(C_RAINDALS)=="","NA",as.character(C_RAINDALS))) %>% mutate(AmInd=ifelse(AmInd=="0","No",AmInd)) %>% mutate(AmInd=ifelse(AmInd=="1","Yes",AmInd))
+ggplot() + geom_point(data=g,aes(x=PC1,y=PC2,col=AmInd,shape=AmInd))+ theme_bw() + scale_colour_brewer(type="qual",palette="Dark2")
+
+##color by C_RABLACK (self-report Black or African American)
+g<-mutate(g,Black=ifelse(is.na(C_RABLACK)|as.character(C_RABLACK)=="2"|as.character(C_RABLACK)=="","NA",as.character(C_RABLACK))) %>% mutate(Black=ifelse(Black=="0","No",Black)) %>% mutate(Black=ifelse(Black=="1","Yes",Black))
+ggplot() + geom_point(data=g,aes(x=PC1,y=PC2,col=Black,shape=Black))+ theme_bw() + scale_colour_brewer(type="qual",palette="Dark2")
+
+##color by C_RAHAWOPI (self-report Native Hawaiian Pacific Islander)
+g<-mutate(g,HawPI=ifelse(is.na(C_RAHAWOPI)|as.character(C_RAHAWOPI)=="2"|as.character(C_RAHAWOPI)=="","NA",as.character(C_RAHAWOPI))) %>% mutate(HawPI=ifelse(HawPI=="0","No",HawPI)) %>% mutate(HawPI=ifelse(HawPI=="1","Yes",HawPI))
+ggplot() + geom_point(data=g,aes(x=PC1,y=PC2,col=HawPI,shape=HawPI))+ theme_bw() + scale_colour_brewer(type="qual",palette="Dark2")
+```
+
+```{r chooseEuro, eval=TRUE, echo=TRUE} 
+###choose individuals from PtStudy for homogeneous GWAS###
+ceu <- filter(pcdf,pop=='CEU')
+
+uPC1 <- mean(ceu$PC1) + 12*sd(ceu$PC1)
+lPC1 <- mean(ceu$PC1) - 12*sd(ceu$PC1)
+uPC2 <- mean(ceu$PC2) + 12*sd(ceu$PC2)
+lPC2 <- mean(ceu$PC2) - 12*sd(ceu$PC2)
+
+ggplot() + geom_point(data=gwas,aes(x=PC1,y=PC2,col=pop,shape=pop))+geom_point(data=hm3,aes(x=PC1,y=PC2,col=pop,shape=pop))+ theme_bw() +geom_vline(xintercept=c(uPC1,lPC1)) +geom_hline(yintercept=c(uPC2,lPC2))+ scale_colour_brewer(type="qual",palette="Dark2")
+
+inclusion <- gwas[gwas$PC1 >= lPC1,]
+inclusion <- inclusion[inclusion$PC1 <= uPC1,]
+inclusion <- inclusion[inclusion$PC2 >= lPC2,]
+inclusion <- inclusion[inclusion$PC2 <= uPC2,]
+samples <- dplyr::select(inclusion, FID, IID)
+##number left after rm non-euro (CEU) clustering individuals
+dim(samples)[1]
+##number removed in PCA analysis
+dim(gwas)[1]-dim(samples)[1]
+excluded <- dplyr::filter(gwas,IID %in% samples$IID==FALSE)
+write.table(excluded,file=my.dir %&% "F13.noneuro.10PCs.covfile",quote=FALSE,row.names=FALSE)
+
+ggplot() + geom_point(data=gwas,aes(x=PC1,y=PC2,col=gwas$IID %in% samples$IID,shape=gwas$IID %in% samples$IID))+geom_point(data=hm3,aes(x=PC1,y=PC2,col=pop,shape=pop))+ theme_bw()+ scale_colour_brewer(type="qual",palette="Dark2")
+
+write.table(samples,file=my.dir %&% "F13.euro.GWAS.PCAs",quote=F,row.names=F,col.names=F)
+```
+
+```{r eval = TRUE}
+##Run smartpca with euro only, see 39_plink_QC_riken2.sh
+europcs <- read.table(my.dir %&% "F13_euro_LDpruned.evec",skip=1)
+eupcdf <- europcs %>% rename(PC1=V2,PC2=V3,PC3=V4,PC4=V5,PC5=V6,PC6=V7,PC7=V8,PC8=V9,PC9=V10,PC10=V11) %>% mutate(pop="PtStudy")
+##calc proportion variance explained by each PC
+eval <- scan(my.dir %&% 'F13_euro_LDpruned.eval')[1:10]
+round(eval/sum(eval),3)
+ggplot() + geom_point(data=eupcdf,aes(x=PC1,y=PC2,col=pop,shape=pop)) + theme_bw()
+ggplot() + geom_point(data=eupcdf,aes(x=PC1,y=PC3,col=pop,shape=pop)) + theme_bw()
+ggplot() + geom_point(data=eupcdf,aes(x=PC2,y=PC3,col=pop,shape=pop)) + theme_bw()
+```
+
