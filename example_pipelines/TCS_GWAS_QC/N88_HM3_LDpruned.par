@@ -1,0 +1,10 @@
+genotypename: /group/dolan-lab/hwheeler/ThePlatinumStudy/GWAS/genotypes/N88_HM3_LDpruned.ped
+snpname: /group/dolan-lab/hwheeler/ThePlatinumStudy/GWAS/genotypes/N88_HM3_LDpruned.map
+indivname: /group/dolan-lab/hwheeler/ThePlatinumStudy/GWAS/genotypes/N88_HM3_LDpruned.fam
+evecoutname: /group/dolan-lab/hwheeler/ThePlatinumStudy/GWAS/genotypes/N88_HM3_LDpruned_2015-11-18.evec
+evaloutname: /group/dolan-lab/hwheeler/ThePlatinumStudy/GWAS/genotypes/N88_HM3_LDpruned_2015-11-18.eval
+outliername: /group/dolan-lab/hwheeler/ThePlatinumStudy/GWAS/genotypes/N88_HM3_LDpruned_2015-11-18.outlier
+numoutevec: 10
+numoutlieriter: 0
+numoutlierevec: 2
+outliersigmathresh: 6
